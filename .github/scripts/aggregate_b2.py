@@ -113,8 +113,11 @@ def aggregate_data():
         if file_version.upload_timestamp > cutoff_ts:
             filename = file_version.file_name
             try:
+                import io
                 downloaded_file = bucket.download_file_by_id(file_version.id_)
-                content = downloaded_file.read().decode('utf-8')
+                buf = io.BytesIO()
+                downloaded_file.save(buf)
+                content = buf.getvalue().decode('utf-8')
                 data = json.loads(content)
 
                 # 处理 3队防守组合
