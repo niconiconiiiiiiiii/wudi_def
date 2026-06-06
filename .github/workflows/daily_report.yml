@@ -1,0 +1,49 @@
+name: Daily Defense Report
+
+on:
+  schedule:
+    # Run every day at 12:00 UTC (20:00 Beijing Time)
+    - cron: '0 12 * * *'
+  workflow_dispatch: # Allow manual trigger
+
+permissions:
+  contents: write
+
+jobs:
+  aggregate-and-publish:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Aggregation Script
+        env:
+          B2_APP_KEY_ID: ${{ secrets.B2_APP_KEY_ID }}
+          B2_APP_KEY: ${{ secrets.B2_APP_KEY }}
+          B2_BUCKET_NAME: ${{ secrets.B2_BUCKET_NAME }}
+        run: python .github/scripts/aggregate_b2.py
+
+      - name: Commit Reports
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "docs: Auto-update daily defense reports [skip ci]"
+          file_pattern: "reports/*.csv"
+
+      - name: Update Latest Data Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: shared-data-latest
+          name: "Latest Aggregated Defense Data"
+          body: "Auto-generated aggregation of JJC defense records."
+          files: aggregated_defense_groups.json
+          make_latest: true
