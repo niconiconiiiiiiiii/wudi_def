@@ -45,9 +45,48 @@ def fetch_chara_names():
 
 CHARA_NICKNAME = fetch_chara_names()
 
+def fetch_search_area_width():
+    search_area_width = {}
+    urls = [
+        "https://raw.githubusercontent.com/niconiconiiiiiiiii/data-sync-tool/refs/heads/main/CN_pcr_data.py",
+        "https://raw.githubusercontent.com/niconiconiiiiiiiii/data-sync-tool/refs/heads/main/JP_pcr_data.py"
+    ]
+    for url in urls:
+        try:
+            resp = requests.get(url, timeout=10)
+            if resp.status_code == 200:
+                code = resp.text
+                start_idx = code.find("SEARCH_AREA_WIDTH")
+                if start_idx != -1:
+                    dict_start = code.find("{", start_idx)
+                    stack = 0
+                    dict_end = -1
+                    for i in range(dict_start, len(code)):
+                        if code[i] == '{': stack += 1
+                        elif code[i] == '}':
+                            stack -= 1
+                            if stack == 0:
+                                dict_end = i + 1
+                                break
+                    if dict_end != -1:
+                        dict_str = code[dict_start:dict_end]
+                        search_area_width = ast.literal_eval(dict_str)
+                        print(f"成功从 {url} 加载站位库，共 {len(search_area_width)} 个角色站位")
+                        break
+        except Exception as e:
+            print(f"加载站位库失败: {e}")
+    return search_area_width
+
+SEARCH_AREA_WIDTH = fetch_search_area_width()
+
 def translate_team(team_list):
+    # 根据 SEARCH_AREA_WIDTH(6位ID) 排序，无数据的放最后(9999)，相同站位按ID升序
+    sorted_team = sorted(
+        team_list,
+        key=lambda uid: (SEARCH_AREA_WIDTH.get(int(uid), 9999) if str(uid).isdigit() else 9999, int(uid) if str(uid).isdigit() else 0)
+    )
     names = []
-    for uid in team_list:
+    for uid in sorted_team:
         try:
             unit_id = int(uid)
             base_id = unit_id // 100
