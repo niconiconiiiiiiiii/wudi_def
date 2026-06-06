@@ -12,6 +12,7 @@ from b2sdk.v2 import InMemoryAccountInfo, B2Api
 def fetch_chara_names():
     chara_nickname = {}
     urls = [
+        "https://raw.githubusercontent.com/cc004/autopcr/refs/heads/main/autopcr/util/pcr_data.py",
         "https://raw.githubusercontent.com/Ice-Cirno/HoshinoBot/master/hoshino/modules/priconne/pcr_data.py",
     ]
     for url in urls:
@@ -51,7 +52,8 @@ def translate_team(team_list):
             unit_id = int(uid)
             base_id = unit_id // 100
             if base_id in CHARA_NICKNAME and CHARA_NICKNAME[base_id]:
-                names.append(CHARA_NICKNAME[base_id][0])
+                val = CHARA_NICKNAME[base_id]
+                names.append(val[0] if isinstance(val, list) else val)
             else:
                 names.append(str(unit_id))
         except:
