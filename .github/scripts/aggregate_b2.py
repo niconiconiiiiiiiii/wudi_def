@@ -178,9 +178,16 @@ def aggregate_data():
                         sig = s["group_signature"]
                         if sig not in strong_merged:
                             strong_merged[sig] = s
+                            strong_merged[sig]["bot_count"] = 1
+                            strong_merged[sig]["tested_min"] = s["tested_count"]
+                            strong_merged[sig]["tested_max"] = s["tested_count"]
                         else:
                             strong_merged[sig]["tested_count"] += s["tested_count"]
                             strong_merged[sig]["defense_win_count"] += s["defense_win_count"]
+                            strong_merged[sig]["bot_count"] = strong_merged[sig].get("bot_count", 1) + 1
+                            tc = s["tested_count"]
+                            strong_merged[sig]["tested_min"] = min(strong_merged[sig].get("tested_min", tc), tc)
+                            strong_merged[sig]["tested_max"] = max(strong_merged[sig].get("tested_max", tc), tc)
             except Exception as e:
                 print(f"处理文件 {filename} 时出错: {e}")
 
@@ -228,11 +235,12 @@ def aggregate_data():
     high_quality_path = f"reports/{today_str}_人类高质量防守.csv"
     with open(high_quality_path, "w", encoding="utf-8-sig", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["进攻方胜率", "候选队伍数", "防守队伍构成"])
+        writer.writerow(["进攻突破率", "数据源数", "候选数范围", "防守队伍构成"])
         for s in filtered_strong:
             rate_str = f"{s['calculated_win_rate'] * 100:.1f}%"
+            tested_range = f"{s.get('tested_min', s['tested_count'])}~{s.get('tested_max', s['tested_count'])}"
             team_str = translate_single_team_json(s["teams_json"])
-            writer.writerow([rate_str, s["tested_count"], team_str])
+            writer.writerow([rate_str, s.get("bot_count", 1), tested_range, team_str])
     print(f"导出 {high_quality_path}，共 {len(filtered_strong)} 条")
 
 
