@@ -228,7 +228,7 @@ def aggregate_data():
     high_quality_path = f"reports/{today_str}_人类高质量防守.csv"
     with open(high_quality_path, "w", encoding="utf-8-sig", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["进攻方胜率", "被模拟次数", "防守队伍构成"])
+        writer.writerow(["进攻方胜率", "候选队伍数", "防守队伍构成"])
         for s in filtered_strong:
             rate_str = f"{s['calculated_win_rate'] * 100:.1f}%"
             team_str = translate_single_team_json(s["teams_json"])
