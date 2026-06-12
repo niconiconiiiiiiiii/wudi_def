@@ -1,247 +1,199 @@
-import os
-import json
-import csv
-import time
 import ast
-from datetime import datetime, timedelta, timezone
-from collections import defaultdict
+import csv
+import io
+import json
+import os
+import sys
+from pathlib import Path
+
 import requests
-from b2sdk.v2 import InMemoryAccountInfo, B2Api
+from b2sdk.v2 import B2Api, InMemoryAccountInfo
 
-# ========== 1. 角色名翻译加载 ==========
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from aggregation import build_aggregation, snapshot_kind_from_name
+
+
 def fetch_chara_names():
-    chara_nickname = {}
-    urls = [
-        "https://raw.githubusercontent.com/cc004/autopcr/refs/heads/main/autopcr/util/pcr_data.py",
-        "https://raw.githubusercontent.com/Ice-Cirno/HoshinoBot/master/hoshino/modules/priconne/pcr_data.py",
-    ]
-    for url in urls:
-        try:
-            resp = requests.get(url, timeout=10)
-            if resp.status_code == 200:
-                # 简单用 ast 解析 dict
-                code = resp.text
-                start_idx = code.find("CHARA_NICKNAME")
-                if start_idx != -1:
-                    dict_start = code.find("{", start_idx)
-                    # 寻找结束的 }
-                    stack = 0
-                    dict_end = -1
-                    for i in range(dict_start, len(code)):
-                        if code[i] == '{': stack += 1
-                        elif code[i] == '}':
-                            stack -= 1
-                            if stack == 0:
-                                dict_end = i + 1
-                                break
-                    if dict_end != -1:
-                        dict_str = code[dict_start:dict_end]
-                        chara_nickname = ast.literal_eval(dict_str)
-                        print(f"成功加载角色别名库，共 {len(chara_nickname)} 个角色")
-                        break
-        except Exception as e:
-            print(f"加载别名库失败: {e}")
-    return chara_nickname
-
-CHARA_NICKNAME = fetch_chara_names()
-
-def fetch_search_area_width():
-    search_area_width = {}
-    urls = [
-        "https://raw.githubusercontent.com/niconiconiiiiiiiii/data-sync-tool/refs/heads/main/CN_pcr_data.py",
-        "https://raw.githubusercontent.com/niconiconiiiiiiiii/data-sync-tool/refs/heads/main/JP_pcr_data.py"
-    ]
-    for url in urls:
-        try:
-            resp = requests.get(url, timeout=10)
-            if resp.status_code == 200:
-                code = resp.text
-                start_idx = code.find("SEARCH_AREA_WIDTH")
-                if start_idx != -1:
-                    dict_start = code.find("{", start_idx)
-                    stack = 0
-                    dict_end = -1
-                    for i in range(dict_start, len(code)):
-                        if code[i] == '{': stack += 1
-                        elif code[i] == '}':
-                            stack -= 1
-                            if stack == 0:
-                                dict_end = i + 1
-                                break
-                    if dict_end != -1:
-                        dict_str = code[dict_start:dict_end]
-                        search_area_width = ast.literal_eval(dict_str)
-                        print(f"成功从 {url} 加载站位库，共 {len(search_area_width)} 个角色站位")
-                        break
-        except Exception as e:
-            print(f"加载站位库失败: {e}")
-    return search_area_width
-
-SEARCH_AREA_WIDTH = fetch_search_area_width()
-
-def translate_team(team_list):
-    # 根据 SEARCH_AREA_WIDTH(6位ID) 排序，无数据的放最后(9999)，相同站位按ID升序
-    sorted_team = sorted(
-        team_list,
-        key=lambda uid: (SEARCH_AREA_WIDTH.get(int(uid), 9999) if str(uid).isdigit() else 9999, int(uid) if str(uid).isdigit() else 0)
+    url = (
+        "https://raw.githubusercontent.com/Ice-Cirno/HoshinoBot/"
+        "master/hoshino/modules/priconne/pcr_data.py"
     )
+    try:
+        response = requests.get(url, timeout=10)
+        response.raise_for_status()
+        code = response.text
+        start_index = code.find("CHARA_NICKNAME")
+        dict_start = code.find("{", start_index)
+        if start_index < 0 or dict_start < 0:
+            return {}
+        depth = 0
+        for index in range(dict_start, len(code)):
+            if code[index] == "{":
+                depth += 1
+            elif code[index] == "}":
+                depth -= 1
+                if depth == 0:
+                    return ast.literal_eval(code[dict_start : index + 1])
+    except Exception as exc:
+        print(f"角色别名加载失败，将使用角色 ID：{exc}")
+    return {}
+
+
+def translate_team(team, nicknames):
     names = []
-    for uid in sorted_team:
-        try:
-            unit_id = int(uid)
-            base_id = unit_id // 100
-            if base_id in CHARA_NICKNAME and CHARA_NICKNAME[base_id]:
-                val = CHARA_NICKNAME[base_id]
-                names.append(val[0] if isinstance(val, list) else val)
-            else:
-                names.append(str(unit_id))
-        except:
-            names.append(str(uid))
+    for raw_unit_id in team:
+        unit_id = int(raw_unit_id)
+        aliases = nicknames.get(unit_id // 100)
+        names.append(str(aliases[0]) if aliases else str(unit_id))
     return " ".join(names)
 
-def translate_teams_json(teams_json_str):
+
+def translate_teams_json(teams_json, nicknames):
     try:
-        teams = json.loads(teams_json_str)
-        translated = []
-        for team in teams:
-            if not team:
-                translated.append("(暗牌)")
-            else:
-                translated.append(translate_team(team))
-        # 补齐3队（针对3队组合表）
+        teams = json.loads(teams_json)
+        translated = [translate_team(team, nicknames) if team else "(暗牌)" for team in teams]
         while len(translated) < 3:
             translated.append("(暗牌)")
-        return translated
-    except:
+        return translated[:3]
+    except Exception:
         return ["", "", ""]
 
-def translate_single_team_json(teams_json_str):
+
+def translate_single_team_json(teams_json, nicknames):
     try:
-        teams = json.loads(teams_json_str)
-        if teams and len(teams) > 0 and teams[0]:
-            return translate_team(teams[0])
-    except:
-        pass
-    return ""
+        teams = json.loads(teams_json)
+        return translate_team(teams[0], nicknames) if teams and teams[0] else ""
+    except Exception:
+        return ""
 
 
-# ========== 2. 从 B2 获取数据 ==========
+def download_json(bucket, file_version):
+    buffer = io.BytesIO()
+    bucket.download_file_by_id(file_version.id_).save(buffer)
+    buffer.seek(0)
+    return json.loads(buffer.read().decode("utf-8"))
+
+
+def load_snapshots(bucket):
+    snapshots = []
+    for file_version, _ in bucket.ls(
+        folder_to_list="upload/snapshots",
+        latest_only=False,
+        recursive=True,
+    ):
+        kind = snapshot_kind_from_name(file_version.file_name)
+        if kind is None:
+            continue
+        bot_id = file_version.file_name.split("/")[2]
+        if getattr(file_version, "action", "upload") != "upload":
+            snapshots.append(
+                {
+                    "kind": kind,
+                    "upload_timestamp": file_version.upload_timestamp,
+                    "payload": {"bot_id": bot_id},
+                }
+            )
+            continue
+        try:
+            payload = download_json(bucket, file_version)
+        except Exception as exc:
+            print(f"跳过无法读取的快照 {file_version.file_name}: {exc}")
+            payload = {"bot_id": bot_id}
+        snapshots.append(
+            {
+                "kind": kind,
+                "upload_timestamp": file_version.upload_timestamp,
+                "payload": payload,
+            }
+        )
+    return snapshots
+
+
+def write_machine_output(machine_output):
+    output_path = REPO_ROOT / "aggregated_defense_groups.json"
+    temporary_path = output_path.with_suffix(".json.tmp")
+    temporary_path.write_text(
+        json.dumps(machine_output, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    json.loads(temporary_path.read_text(encoding="utf-8"))
+    temporary_path.replace(output_path)
+    print(
+        f"导出 {output_path.name}：{len(machine_output['groups'])} 条，"
+        f"{machine_output['total_bots']} 台 Bot"
+    )
+
+
+def write_daily_reports(result, nicknames):
+    reports_dir = REPO_ROOT / "reports"
+    reports_dir.mkdir(exist_ok=True)
+    report_date = result["report_date"]
+
+    defense_path = reports_dir / f"{report_date}_艾防.csv"
+    groups = sorted(
+        result["daily_groups"],
+        key=lambda item: int(item.get("encounter_count", 0)),
+        reverse=True,
+    )
+    with defense_path.open("w", encoding="utf-8-sig", newline="") as file:
+        writer = csv.writer(file)
+        writer.writerow(["遭遇频次", "队伍1", "队伍2", "队伍3"])
+        for group in groups:
+            writer.writerow(
+                [
+                    group["encounter_count"],
+                    *translate_teams_json(group["teams_json"], nicknames),
+                ]
+            )
+
+    strength_path = reports_dir / f"{report_date}_人类高质量防守.csv"
+    filtered_strengths = []
+    for sample in result["daily_strong_defenses"]:
+        tested_count = int(sample.get("tested_count", 0))
+        if tested_count < 10:
+            continue
+        calculated_win_rate = int(sample.get("defense_win_count", 0)) / tested_count
+        if calculated_win_rate > 0.70:
+            continue
+        filtered_strengths.append((calculated_win_rate, sample))
+    filtered_strengths.sort(key=lambda item: item[0])
+    with strength_path.open("w", encoding="utf-8-sig", newline="") as file:
+        writer = csv.writer(file)
+        writer.writerow(["进攻方胜率", "被模拟次数", "防守队伍构成"])
+        for rate, sample in filtered_strengths:
+            writer.writerow(
+                [
+                    f"{rate * 100:.1f}%",
+                    sample["tested_count"],
+                    translate_single_team_json(sample["teams_json"], nicknames),
+                ]
+            )
+
+    print(f"导出昨日日报：{defense_path.name}、{strength_path.name}")
+
+
 def aggregate_data():
     app_key_id = os.environ.get("B2_APP_KEY_ID")
     app_key = os.environ.get("B2_APP_KEY")
     bucket_name = os.environ.get("B2_BUCKET_NAME")
-
     if not all([app_key_id, app_key, bucket_name]):
-        print("缺少 B2 相关的环境变量 (B2_APP_KEY_ID, B2_APP_KEY, B2_BUCKET_NAME)")
-        return
+        raise RuntimeError(
+            "缺少 B2 环境变量：B2_APP_KEY_ID、B2_APP_KEY、B2_BUCKET_NAME"
+        )
 
     info = InMemoryAccountInfo()
     b2_api = B2Api(info)
     b2_api.authorize_account("production", app_key_id, app_key)
     bucket = b2_api.get_bucket_by_name(bucket_name)
 
-    now = datetime.now(timezone.utc)
-    cutoff = now - timedelta(hours=24)
-    cutoff_ts = cutoff.timestamp() * 1000  # B2 uses milliseconds
-
-    groups_merged = {}
-    strong_merged = {}
-
-    print(f"拉取过去 24 小时的上传记录 (cutoff: {cutoff})")
-    
-    # 获取 upload/ 目录下的所有文件
-    for file_version, _ in bucket.ls("upload/"):
-        if file_version.upload_timestamp > cutoff_ts:
-            filename = file_version.file_name
-            try:
-                import io
-                downloaded_file = bucket.download_file_by_id(file_version.id_)
-                buf = io.BytesIO()
-                downloaded_file.save(buf)
-                content = buf.getvalue().decode('utf-8')
-                data = json.loads(content)
-
-                # 处理 3队防守组合
-                if "defense_groups_" in filename and "groups" in data:
-                    for g in data["groups"]:
-                        sig = g["group_signature"]
-                        if sig not in groups_merged:
-                            groups_merged[sig] = g
-                        else:
-                            groups_merged[sig]["encounter_count"] += g["encounter_count"]
-                            groups_merged[sig]["first_seen_at"] = min(groups_merged[sig]["first_seen_at"], g.get("first_seen_at", 0))
-                            groups_merged[sig]["last_seen_at"] = max(groups_merged[sig]["last_seen_at"], g.get("last_seen_at", 0))
-
-                # 处理 单队高强度防守
-                elif "strong_defenses_" in filename and "strong_defenses" in data:
-                    for s in data["strong_defenses"]:
-                        sig = s["group_signature"]
-                        if sig not in strong_merged:
-                            strong_merged[sig] = s
-                            strong_merged[sig]["bot_count"] = 1
-                            strong_merged[sig]["tested_min"] = s["tested_count"]
-                            strong_merged[sig]["tested_max"] = s["tested_count"]
-                        else:
-                            strong_merged[sig]["tested_count"] += s["tested_count"]
-                            strong_merged[sig]["defense_win_count"] += s["defense_win_count"]
-                            strong_merged[sig]["bot_count"] = strong_merged[sig].get("bot_count", 1) + 1
-                            tc = s["tested_count"]
-                            strong_merged[sig]["tested_min"] = min(strong_merged[sig].get("tested_min", tc), tc)
-                            strong_merged[sig]["tested_max"] = max(strong_merged[sig].get("tested_max", tc), tc)
-            except Exception as e:
-                print(f"处理文件 {filename} 时出错: {e}")
-
-    # ========== 3. 处理并写入机器版 JSON ==========
-    aggregated_groups_list = list(groups_merged.values())
-    machine_output = {
-        "schema_version": 1,
-        "aggregated_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "groups": aggregated_groups_list
-    }
-    with open("aggregated_defense_groups.json", "w", encoding="utf-8") as f:
-        json.dump(machine_output, f, ensure_ascii=False, indent=2)
-    print(f"导出 aggregated_defense_groups.json，共 {len(aggregated_groups_list)} 组合")
-
-    # ========== 4. 处理并写入人类版 CSV ==========
-    os.makedirs("reports", exist_ok=True)
-    today_str = datetime.now().strftime("%Y-%m-%d")
-
-    # A. 艾防.csv (按 encounter_count 降序)
-    groups_sorted = sorted(aggregated_groups_list, key=lambda x: x["encounter_count"], reverse=True)
-    ai_defense_path = f"reports/{today_str}_艾防.csv"
-    with open(ai_defense_path, "w", encoding="utf-8-sig", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(["遭遇频次", "队伍1", "队伍2", "队伍3"])
-        for g in groups_sorted:
-            t1, t2, t3 = translate_teams_json(g["teams_json"])
-            writer.writerow([g["encounter_count"], t1, t2, t3])
-    print(f"导出 {ai_defense_path}，共 {len(groups_sorted)} 条")
-
-    # B. 人类高质量防守.csv (重新计算胜率，按胜率升序，过滤 胜率>70% 或 tested_count<10)
-    strong_list = list(strong_merged.values())
-    filtered_strong = []
-    for s in strong_list:
-        tested = s["tested_count"]
-        if tested < 10:
-            continue
-        # 重新计算进攻方胜率
-        attack_win_rate = s["defense_win_count"] / tested
-        if attack_win_rate > 0.70:
-            continue
-        s["calculated_win_rate"] = attack_win_rate
-        filtered_strong.append(s)
-
-    filtered_strong.sort(key=lambda x: x["calculated_win_rate"])
-    high_quality_path = f"reports/{today_str}_人类高质量防守.csv"
-    with open(high_quality_path, "w", encoding="utf-8-sig", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(["进攻突破率", "数据源数", "候选数范围", "防守队伍构成"])
-        for s in filtered_strong:
-            rate_str = f"{s['calculated_win_rate'] * 100:.1f}%"
-            tested_range = f"{s.get('tested_min', s['tested_count'])}~{s.get('tested_max', s['tested_count'])}"
-            team_str = translate_single_team_json(s["teams_json"])
-            writer.writerow([rate_str, s.get("bot_count", 1), tested_range, team_str])
-    print(f"导出 {high_quality_path}，共 {len(filtered_strong)} 条")
+    snapshots = load_snapshots(bucket)
+    result = build_aggregation(snapshots)
+    nicknames = fetch_chara_names()
+    write_machine_output(result["machine_output"])
+    write_daily_reports(result, nicknames)
 
 
 if __name__ == "__main__":
