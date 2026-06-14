@@ -1,0 +1,49 @@
+name: Daily Defense Report And 30-Day Snapshot
+
+on:
+  schedule:
+    # 每天北京时间 03:30 (UTC 时间 19:30) 运行，完美衔接本地的 03:00 上传和 05:00 下载
+    - cron: '30 19 * * *'
+  workflow_dispatch: # Allow manual trigger
+
+permissions:
+  contents: write
+
+jobs:
+  aggregate-and-publish:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Build Yesterday Reports And 30-Day Snapshot
+        env:
+          B2_APP_KEY_ID: ${{ secrets.B2_APP_KEY_ID }}
+          B2_APP_KEY: ${{ secrets.B2_APP_KEY }}
+          B2_BUCKET_NAME: ${{ secrets.B2_BUCKET_NAME }}
+        run: python .github/scripts/aggregate_b2.py
+
+      - name: Commit Reports
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "docs: Auto-update daily defense reports [skip ci]"
+          file_pattern: "reports/*.csv"
+
+      - name: Publish 30-Day Snapshot
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: shared-data-latest
+          name: "Latest Aggregated Defense Data"
+          body: "Latest 30 Beijing-calendar days of aggregated JJC defense records."
+          files: aggregated_defense_groups.json
+          make_latest: true
